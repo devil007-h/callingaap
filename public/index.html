@@ -1,0 +1,100 @@
+<!DOCTYPE html>
+<html lang="hi">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Private Calling App</title>
+  <style>
+    body { font-family: Arial, sans-serif; text-align: center; background: #121212; color: #fff; padding: 20px; }
+    video { width: 45%; max-width: 400px; background: #000; border-radius: 10px; margin: 10px; border: 2px solid #333; }
+    .btn { padding: 12px 24px; font-size: 16px; margin: 10px; cursor: pointer; background: #28a745; color: white; border: none; border-radius: 5px; }
+    .btn-danger { background: #dc3545; }
+  </style>
+</head>
+<body>
+
+  <h2>Direct Calling App (Low Bandwidth)</h2>
+
+  <div>
+    <video id="localVideo" autoplay playsinline muted></video>
+    <video id="remoteVideo" autoplay playsinline></video>
+  </div>
+
+  <div>
+    <button class="btn" onclick="startCall()">Start Call</button>
+  </div>
+
+  <script src="/socket.io/socket.io.js"></script>
+  <script>
+    const socket = io();
+    let localStream;
+    let peerConnection;
+
+    // Google का 100% Free STUN Server
+    const config = {
+      iceServers: [{ urls: 'stun:stun.l.google.com:19302' }]
+    };
+
+    async function setupCamera() {
+      try {
+        localStream = await navigator.mediaDevices.getUserMedia({ video: true, audio: true });
+        document.getElementById('localVideo').srcObject = localStream;
+      } catch (err) {
+        console.error('Camera access error:', err);
+      }
+    }
+
+    function createPeerConnection() {
+      peerConnection = new RTCPeerConnection(config);
+
+      localStream.getTracks().forEach(track => {
+        peerConnection.addTrack(track, localStream);
+      });
+
+      // Low Data / Low Bandwidth Adaptive Bitrate Setting (8-12 kbps for Audio)
+      peerConnection.getSenders().forEach(sender => {
+        if (sender.track && sender.track.kind === 'audio') {
+          const params = sender.getParameters();
+          if (!params.encodings) params.encodings = [{}];
+          params.encodings[0].maxBitrate = 12000; // 12 kbps limit for weak networks
+          sender.setParameters(params).catch(e => console.log(e));
+        }
+      });
+
+      peerConnection.ontrack = (event) => {
+        document.getElementById('remoteVideo').srcObject = event.streams[0];
+      };
+
+      peerConnection.onicecandidate = (event) => {
+        if (event.candidate) {
+          socket.emit('signal', { candidate: event.candidate });
+        }
+      };
+    }
+
+    async function startCall() {
+      createPeerConnection();
+      const offer = await peerConnection.createOffer();
+      await peerConnection.setLocalDescription(offer);
+      socket.emit('signal', { offer: offer });
+    }
+
+    socket.on('signal', async (data) => {
+      if (!peerConnection) createPeerConnection();
+
+      if (data.offer) {
+        await peerConnection.setRemoteDescription(new RTCSessionDescription(data.offer));
+        const answer = await peerConnection.createAnswer();
+        await peerConnection.setLocalDescription(answer);
+        socket.emit('signal', { answer: answer });
+      } else if (data.answer) {
+        await peerConnection.setRemoteDescription(new RTCSessionDescription(data.answer));
+      } else if (data.candidate) {
+        await peerConnection.addIceCandidate(new RTCIceCandidate(data.candidate));
+      }
+    });
+
+    setupCamera();
+  </script>
+</body>
+</html>
